@@ -11,67 +11,138 @@ const MusicPlayer = () => {
     const [isMuted, setIsMuted] = useState(false);
     const [isLooping, setIsLooping] = useState(false);
     const audioRef = useRef(null);
+    const [hasInteracted, setHasInteracted] = useState(false);
+    const nextButtonRef = useRef(null);
+
+    const generateThumbnail = (songName) => {
+        const hash = songName.split('').reduce((acc, char) => {
+            return char.charCodeAt(0) + ((acc << 5) - acc);
+        }, 0);
+        const hue = Math.abs(hash % 360);
+        const saturation = 70 + (hash % 20);
+        const lightness = 45 + (hash % 10);
+        const color1 = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+        const color2 = `hsl(${(hue + 40) % 360}, ${saturation}%, ${lightness}%)`;
+        return `linear-gradient(45deg, ${color1}, ${color2})`;
+    };
 
     useEffect(() => {
-        // Initialize the audio element
         audioRef.current = new Audio();
         audioRef.current.volume = volume;
         audioRef.current.loop = isLooping;
 
-        // Fetch songs on component mount
         fetch('https://music-app-backend-x6kb.onrender.com/search?q=')
             .then(response => {
-                if (!response.ok) {
-                    throw new Error('Network response was not ok');
-                }
+                if (!response.ok) throw new Error('Network response was not ok');
                 return response.json();
             })
-            .then(data => setSongs(data))
+            .then(data => {
+                setSongs(data);
+            })
             .catch(error => {
                 console.error('Error fetching songs:', error);
             });
 
-        const audio = audioRef.current;
-
-        // Attach event listeners
-        audio.addEventListener('timeupdate', updateProgress);
-        audio.addEventListener('loadedmetadata', () => setDuration(audio.duration));
-        audio.addEventListener('ended', handleSongEnd);
-
-        // Cleanup event listeners on unmount
         return () => {
-            audio.removeEventListener('timeupdate', updateProgress);
-            audio.removeEventListener('loadedmetadata', () => setDuration(audio.duration));
-            audio.removeEventListener('ended', handleSongEnd);
-            audio.pause(); // Stop the audio when the component unmounts
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.src = '';
+            }
         };
     }, []);
 
-    const updateProgress = () => {
-        setCurrentTime(audioRef.current.currentTime);
+    useEffect(() => {
+        const audio = audioRef.current;
+        
+        const handleEnded = () => {
+            if (isLooping) {
+                audio.currentTime = 0;
+                audio.play().catch(console.error);
+            } else {
+                nextButtonRef.current?.click();
+            }
+        };
+
+        const handleTimeUpdate = () => {
+            setCurrentTime(audio.currentTime);
+        };
+
+        const handleLoadedMetadata = () => {
+            setDuration(audio.duration);
+        };
+
+        audio.addEventListener('ended', handleEnded);
+        audio.addEventListener('timeupdate', handleTimeUpdate);
+        audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+
+        return () => {
+            audio.removeEventListener('ended', handleEnded);
+            audio.removeEventListener('timeupdate', handleTimeUpdate);
+            audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        };
+    }, [isLooping]);
+
+    const loadAndPlaySong = async (song) => {
+        if (!song) return;
+        
+        try {
+            audioRef.current.src = `https://music-app-backend-x6kb.onrender.com/stream/${song}`;
+            setCurrentSong(song);
+            
+            await audioRef.current.load();
+            
+            if (hasInteracted) {
+                await audioRef.current.play();
+                setIsPlaying(true);
+            } else {
+                setIsPlaying(false);
+            }
+        } catch (error) {
+            console.error("Error playing song:", error);
+            setIsPlaying(false);
+        }
     };
 
     const playSong = (song) => {
-        if (!song) return;
-
-        setCurrentSong(song);
-        audioRef.current.src = `https://music-app-backend-x6kb.onrender.com/stream/${song}`;
-        audioRef.current.play()
-            .then(() => {
-                setIsPlaying(true);
-            })
-            .catch((error) => {
-                console.error("Error playing song:", error);
-            });
+        setHasInteracted(true);
+        loadAndPlaySong(song);
     };
 
-    const togglePlay = () => {
-        if (isPlaying) {
-            audioRef.current.pause();
-        } else {
-            audioRef.current.play();
+    const togglePlay = async () => {
+        try {
+            if (!currentSong) {
+                if (songs.length > 0) {
+                    await loadAndPlaySong(songs[0]);
+                }
+                return;
+            }
+
+            if (isPlaying) {
+                audioRef.current.pause();
+                setIsPlaying(false);
+            } else {
+                await audioRef.current.play();
+                setIsPlaying(true);
+            }
+        } catch (error) {
+            console.error("Error toggling play:", error);
         }
-        setIsPlaying(!isPlaying);
+    };
+
+    const playNextSong = () => {
+        if (songs.length === 0 || !currentSong) return;
+        
+        const currentIndex = songs.indexOf(currentSong);
+        const nextIndex = (currentIndex + 1) % songs.length;
+        loadAndPlaySong(songs[nextIndex]);
+    };
+
+    const playPreviousSong = () => {
+        if (songs.length === 0 || !currentSong) return;
+        
+        const currentIndex = songs.indexOf(currentSong);
+        const previousIndex = (currentIndex - 1 + songs.length) % songs.length;
+        loadAndPlaySong(songs[previousIndex]);
     };
 
     const handleTimeChange = (e) => {
@@ -102,40 +173,12 @@ const MusicPlayer = () => {
         audioRef.current.loop = newLoopState;
     };
 
-    const handleSongEnd = () => {
-        if (isLooping) {
-            audioRef.current.currentTime = 0;
-            audioRef.current.play();
-        } else {
-            playNextSong();
-        }
-    };
-
-    const playNextSong = () => {
-        if (songs.length === 0) return;
-
-        const currentIndex = songs.indexOf(currentSong);
-        const nextIndex = (currentIndex + 1) % songs.length;
-        const nextSong = songs[nextIndex];
-        playSong(nextSong);
-    };
-
-    const playPreviousSong = () => {
-        if (songs.length === 0) return;
-
-        const currentIndex = songs.indexOf(currentSong);
-        const previousIndex = (currentIndex - 1 + songs.length) % songs.length;
-        const previousSong = songs[previousIndex];
-        playSong(previousSong);
-    };
-
     const formatTime = (time) => {
         const minutes = Math.floor(time / 60);
         const seconds = Math.floor(time % 60);
         return `${minutes}:${seconds.toString().padStart(2, '0')}`;
     };
 
-    // Debounce function for search input
     const debounce = (func, delay) => {
         let timeoutId;
         return (...args) => {
@@ -156,7 +199,6 @@ const MusicPlayer = () => {
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-100 p-8">
             <div className="max-w-4xl mx-auto">
-                {/* Header */}
                 <div className="mb-8 flex items-center justify-between">
                     <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
                         Sonic Stream
@@ -172,24 +214,21 @@ const MusicPlayer = () => {
                     </div>
                 </div>
 
-                {/* Now Playing Section */}
                 {currentSong && (
                     <div className="mb-8 bg-gray-800/30 rounded-xl p-6 backdrop-blur-sm border border-gray-700">
                         <div className="flex flex-col md:flex-row items-center gap-8">
-                            <div className="w-64 h-64 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center overflow-hidden">
-                                <img
-                                    src="https://via.placeholder.com/300" // Placeholder image
-                                    alt="Album Art"
-                                    className="w-full h-full object-cover"
-                                />
+                            <div 
+                                className="w-64 h-64 rounded-lg flex items-center justify-center"
+                                style={{ background: generateThumbnail(currentSong) }}
+                            >
+                                <Music2 size={64} className="text-white/50" />
                             </div>
                             <div className="flex-1 space-y-4">
                                 <div>
                                     <h3 className="text-2xl font-bold">{currentSong}</h3>
-                                    <p className="text-gray-400">Artist Name</p>
+                                    <p className="text-gray-400">Now Playing</p>
                                 </div>
 
-                                {/* Progress Bar */}
                                 <div className="space-y-2">
                                     <div className="relative group">
                                         <input
@@ -210,7 +249,6 @@ const MusicPlayer = () => {
                                     </div>
                                 </div>
 
-                                {/* Controls */}
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center space-x-4">
                                         <button onClick={playPreviousSong} className="p-2 hover:bg-gray-700/50 rounded-full transition-all">
@@ -222,7 +260,11 @@ const MusicPlayer = () => {
                                         >
                                             {isPlaying ? <Pause size={24} /> : <Play size={24} />}
                                         </button>
-                                        <button onClick={playNextSong} className="p-2 hover:bg-gray-700/50 rounded-full transition-all">
+                                        <button 
+                                            ref={nextButtonRef}
+                                            onClick={playNextSong} 
+                                            className="p-2 hover:bg-gray-700/50 rounded-full transition-all"
+                                        >
                                             <SkipForward size={24} />
                                         </button>
                                     </div>
@@ -253,7 +295,6 @@ const MusicPlayer = () => {
                     </div>
                 )}
 
-                {/* Song List */}
                 <div className="bg-gray-800/30 rounded-xl p-6 backdrop-blur-sm border border-gray-700">
                     <ul className="divide-y divide-gray-700">
                         {songs.map((song, index) => (
@@ -262,7 +303,12 @@ const MusicPlayer = () => {
                                 onClick={() => playSong(song)}
                                 className="py-4 px-4 flex items-center space-x-4 hover:bg-gray-700/30 rounded-lg cursor-pointer transition-all duration-200"
                             >
-                                <Music2 size={20} className="text-blue-400" />
+                                <div 
+                                    className="w-10 h-10 rounded-lg flex items-center justify-center"
+                                    style={{ background: generateThumbnail(song) }}
+                                >
+                                    <Music2 size={16} className="text-white/50" />
+                                </div>
                                 <span className="flex-1">{song}</span>
                                 {currentSong === song && (
                                     <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse" />
